@@ -101,7 +101,7 @@ func (server *Server) HandleConn(conn io.ReadWriteCloser) {
 		return
 	}
 	codec := codecFunc(conn)
-	server.handleCodec(codec)
+	server.handleCodec(codec, option)
 }
 
 // 获取报文头部
@@ -131,7 +131,7 @@ type request struct {
 var invalidRequest = struct{}{}
 
 // 通过编码器处理后续请求，每个请求并发执行
-func (server *Server) handleCodec(cc codec.Codec) {
+func (server *Server) handleCodec(cc codec.Codec, opt *Option) {
 	sending := new(sync.Mutex)
 	wg := new(sync.WaitGroup)
 	for {
@@ -146,7 +146,7 @@ func (server *Server) handleCodec(cc codec.Codec) {
 			continue
 		}
 		wg.Add(1)
-		go server.handleRequest(cc, req, sending, wg)
+		go server.handleRequest(cc, req, sending, wg, opt.HandleTimeout)
 	}
 	wg.Wait()
 	_ = cc.Close()
@@ -200,13 +200,39 @@ func (server *Server) readRequest(cc codec.Codec) (*request, error) {
 	return req, nil
 }
 
-func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
 	defer wg.Done()
-	err := req.svc.call(req.mtype, req.argv, req.replyv)
-	if err != nil {
-		req.header.Error = err.Error()
+	called := make(chan struct{})
+	sent := make(chan struct{})
+	go func() {
+		err := req.svc.call(req.mtype, req.argv, req.replyv)
+		called <- struct{}{}
+		if err != nil {
+			req.header.Error = err.Error()
+			server.sendResponse(cc, req.header, invalidRequest, sending)
+			sent <- struct{}{}
+			return
+		}
+		server.sendResponse(cc, req.header, req.replyv.Interface(), sending)
+		sent <- struct{}{}
+	}()
+
+	if timeout == 0 {
+		<-called
+		<-sent
+		return
 	}
-	server.sendResponse(cc, req.header, req.replyv.Interface(), sending)
+
+	select {
+	case <-called:
+		// 如果调用成功，则等待发送完成
+		<-sent
+	case <-time.After(timeout):
+		// 如果调用超时，则发送超时错误，并关闭连接
+		logrus.Error("minirpc.Server.handleRequest: call timeout")
+		server.sendResponse(cc, req.header, invalidRequest, sending)
+		_ = cc.Close()
+	}
 }
 
 func Accept(linstener net.Listener) {

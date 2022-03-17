@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"minirpc"
 	"net"
 	"os"
@@ -73,7 +74,9 @@ func main() {
 			defer wg.Done()
 			var reply int
 			args := Args{i, i * i}
-			err := client.Call("Foo.Sum", args, &reply)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err := client.Call(ctx, "Foo.Sum", args, &reply)
 			if err != nil {
 				logrus.Errorf("call error: %v", err)
 			}

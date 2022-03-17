@@ -10,8 +10,6 @@ import (
 	"net"
 	"sync"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
 // Call 表示一个 RPC 调用
@@ -178,12 +176,7 @@ func parseOption(opts ...*Option) (*Option, error) {
 		return nil, errors.New("only one option is supported")
 	} else {
 		opt := opts[0]
-		if opt.MagicNumber != MagicNumber {
-			return nil, errors.New("invalid magic number")
-		}
-		if opt.CodecType != codec.JsonType && opt.CodecType != codec.GobType {
-			return nil, errors.New("invalid codec type")
-		}
+		opt.MagicNumber = MagicNumber
 		if opt.CodecType == "" {
 			opt.CodecType = DefaultOption.CodecType
 		}
@@ -273,10 +266,6 @@ func (client *Client) send(call *Call) {
 func (client *Client) Go(serviceMethod string, args, reply interface{}, done chan *Call) *Call {
 	if done == nil {
 		done = make(chan *Call, 1)
-	} else if len(done) == 0 {
-		logrus.Error("done channel is not buffered")
-		close(done)
-		return nil
 	}
 	call := &Call{
 		ServiceMethod: serviceMethod,
@@ -300,4 +289,10 @@ func (client *Client) Call(ctx context.Context, serviceMethod string, args, repl
 	case call := <-call.Done:
 		return call.Err
 	}
+}
+
+func (client *Client) CallTimeout(serviceMethod string, args, reply interface{}, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return client.Call(ctx, serviceMethod, args, reply)
 }
