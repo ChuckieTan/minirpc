@@ -5,21 +5,68 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"minirpc/codec"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/sirupsen/logrus"
 )
 
-type Server struct{}
+const MagicNumber = 0x065279
+
+type Option struct {
+	MagicNumber int
+	CodecType   codec.Type
+}
+
+var DefaultCodecType = codec.GobType
+
+var DefaultOption = &Option{
+	MagicNumber: MagicNumber,
+	CodecType:   codec.GobType,
+}
+
+type Server struct {
+	serviceMap sync.Map
+}
 
 func NewServer() *Server {
 	return &Server{}
 }
 
 var DefaultServer = NewServer()
+
+func (server *Server) Register(rcvr interface{}) error {
+	svc := newService(rcvr)
+	if _, dup := server.serviceMap.LoadOrStore(svc.name, svc); dup {
+		return errors.New("rpc: service already defined: " + svc.name)
+	}
+	return nil
+}
+
+// 根据方法名获取对应的方法和 service
+// service 表示一个被注册的类型和他的方法
+// mtype 表示要被调用的方法
+func (server *Server) findService(serviceMethod string) (*service, *methodType, error) {
+	strs := strings.Split(serviceMethod, ".")
+	if len(strs) != 2 {
+		return nil, nil, errors.New("rpc: service/method request ill-formed: " + serviceMethod)
+	}
+	serviceName, methodName := strs[0], strs[1]
+	svci, ok := server.serviceMap.Load(serviceName)
+	if !ok {
+		return nil, nil, errors.New("rpc: can't find service " + serviceName)
+	}
+	svc := svci.(*service)
+	mtype, ok := svc.method[methodName]
+	if !ok {
+		return nil, nil, errors.New("rpc: can't find method " + methodName)
+	}
+	return svc, mtype, nil
+}
 
 func (server *Server) Accept(linstener net.Listener) {
 	for {
@@ -53,13 +100,13 @@ func (server *Server) HandleConn(conn io.ReadWriteCloser) {
 }
 
 // 获取报文头部
-func (server *Server) readOption(conn io.ReadWriteCloser) (*codec.Option, error) {
-	var option codec.Option
+func (server *Server) readOption(conn io.ReadWriteCloser) (*Option, error) {
+	var option Option
 	if err := json.NewDecoder(conn).Decode(&option); err != nil {
 		err := fmt.Errorf("minirpc.readOption: %v", err)
 		return nil, err
 	}
-	if option.MagicNumber != codec.MagicNumber {
+	if option.MagicNumber != MagicNumber {
 		err := errors.New("minirpc.readOption: magic number error: not a minirpc connection")
 		return nil, err
 	}
@@ -67,59 +114,100 @@ func (server *Server) readOption(conn io.ReadWriteCloser) (*codec.Option, error)
 	return &option, nil
 }
 
+type request struct {
+	// 请求头
+	header *codec.Header
+	// 参数和返回值
+	argv, replyv reflect.Value
+	mtype        *methodType
+	svc          *service
+}
+
+var invalidRequest = struct{}{}
+
 // 通过编码器处理后续请求，每个请求并发执行
 func (server *Server) handleCodec(cc codec.Codec) {
 	sending := new(sync.Mutex)
 	wg := new(sync.WaitGroup)
-	respChan := make(chan *codec.Response, 16)
-	// 发送 channel 里面的 response
-	go func() {
-		for resp := range respChan {
-			sending.Lock()
-			server.sendResponse(cc, resp)
-			sending.Unlock()
-			wg.Done()
-		}
-	}()
 	for {
-		// 首先读取 request
-		request, err := server.readRequest(cc)
+		req, err := server.readRequest(cc)
 		if err != nil {
-			logrus.Error(err)
-			close(respChan)
-			break
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break
+			}
+			logrus.Info("minirpc.Server.handleCodec: read request error:", err)
+			req.header.Error = err.Error()
+			go server.sendResponse(cc, req.header, req, sending)
+			continue
 		}
 		wg.Add(1)
-		go server.handleRequest(request, respChan)
+		go server.handleRequest(cc, req, sending, wg)
 	}
 	wg.Wait()
+	_ = cc.Close()
 }
 
-func (server *Server) sendResponse(cc codec.Codec, resp *codec.Response) {
-	if err := cc.Write(resp); err != nil {
-		logrus.Errorf("minirpc.sendResponse: %v", err)
-		return
+// 通过编码器发送一个 response
+func (server *Server) sendResponse(
+	cc codec.Codec, header *codec.Header, body interface{}, sending *sync.Mutex) {
+	sending.Lock()
+	defer sending.Unlock()
+	if err := cc.Write(header, body); err != nil {
+		log.Println("rpc server: write response error:", err)
 	}
 }
 
-func (server *Server) readRequest(cc codec.Codec) (*codec.Request, error) {
-	var req codec.Request
-	if err := cc.Read(&req); err != nil {
+func (server *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {
+	var header codec.Header
+	if err := cc.ReadHeader(&header); err != nil {
+		if err != io.EOF && err != io.ErrUnexpectedEOF {
+			logrus.Error("read header error: ", err)
+		}
 		return nil, err
 	}
-	return &req, nil
+	return &header, nil
 }
 
-func (server *Server) handleRequest(req *codec.Request, respChan chan *codec.Response) {
-	response := new(codec.Response)
-	response.Seq = req.Seq
-	// 先只输出参数
-	logrus.Info(req.Args)
-	// 假设返回值是 string
-	response.Reply = reflect.ValueOf(fmt.Sprintf("minipc resp %d", req.Seq))
-	respChan <- response
+func (server *Server) readRequest(cc codec.Codec) (*request, error) {
+	header, err := server.readRequestHeader(cc)
+	if err != nil {
+		return nil, err
+	}
+	req := &request{
+		header: header,
+	}
+	req.svc, req.mtype, err = server.findService(header.ServiceMethod)
+	if err != nil {
+		logrus.Error("minirpc.Server.readRequest: ", err)
+		return nil, err
+	}
+	req.argv = req.mtype.newArgv()
+	req.replyv = req.mtype.newReply()
+
+	argvi := req.argv.Interface()
+	if req.argv.Kind() != reflect.Ptr {
+		argvi = req.argv.Addr().Interface()
+	}
+	if err := cc.ReadBody(argvi); err != nil {
+		logrus.Error("read body error: ", err)
+		return nil, err
+	}
+	return req, nil
+}
+
+func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+	defer wg.Done()
+	err := req.svc.call(req.mtype, req.argv, req.replyv)
+	if err != nil {
+		req.header.Error = err.Error()
+	}
+	server.sendResponse(cc, req.header, req.replyv.Interface(), sending)
 }
 
 func Accept(linstener net.Listener) {
 	DefaultServer.Accept(linstener)
+}
+
+func Register(rcvr interface{}) error {
+	return DefaultServer.Register(rcvr)
 }
