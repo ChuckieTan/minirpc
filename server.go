@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -20,13 +21,17 @@ const MagicNumber = 0x065279
 type Option struct {
 	MagicNumber int
 	CodecType   codec.Type
+	// 连接超时时间，0 表示无限制
+	ConnectTimeout time.Duration
+	HandleTimeout  time.Duration
 }
 
 var DefaultCodecType = codec.GobType
 
 var DefaultOption = &Option{
-	MagicNumber: MagicNumber,
-	CodecType:   codec.GobType,
+	MagicNumber:    MagicNumber,
+	CodecType:      codec.GobType,
+	ConnectTimeout: time.Second * 10,
 }
 
 type Server struct {

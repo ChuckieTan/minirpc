@@ -8,6 +8,7 @@ import (
 	"minirpc/codec"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -144,16 +145,12 @@ func (client *Client) recieve() {
 	client.terminateCalls(errors.New("recieve error"))
 }
 
-func NewClient(conn net.Conn, codecType codec.Type) (*Client, error) {
-	newCodecFunc := codec.NewCodecFuncMap[codecType]
+func NewClient(conn net.Conn, opt *Option) (*Client, error) {
+	newCodecFunc := codec.NewCodecFuncMap[opt.CodecType]
 	if newCodecFunc == nil {
-		return nil, fmt.Errorf("unsupported codec type: %v", codecType)
+		return nil, fmt.Errorf("unsupported codec type: %v", opt.CodecType)
 	}
 	cc := newCodecFunc(conn)
-	opt := &Option{
-		MagicNumber: MagicNumber,
-		CodecType:   codecType,
-	}
 	// 发送 option
 	if err := json.NewEncoder(conn).Encode(opt); err != nil {
 		return nil, err
@@ -173,36 +170,66 @@ func NewClient(conn net.Conn, codecType codec.Type) (*Client, error) {
 	return client, nil
 }
 
-func Dial(network string, address string) (client *Client, err error) {
-	conn, err := net.Dial(network, address)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if client == nil {
-			err := conn.Close()
-			if err != nil {
-				logrus.Error("close conn error: ", err)
-			}
+func parseOption(opts ...*Option) (*Option, error) {
+	if len(opts) == 0 || opts[0] == nil {
+		return DefaultOption, nil
+	} else if len(opts) != 1 {
+		return nil, errors.New("only one option is supported")
+	} else {
+		opt := opts[0]
+		if opt.MagicNumber != MagicNumber {
+			return nil, errors.New("invalid magic number")
 		}
-	}()
-	return NewClient(conn, DefaultCodecType)
+		if opt.CodecType != codec.JsonType && opt.CodecType != codec.GobType {
+			return nil, errors.New("invalid codec type")
+		}
+		if opt.CodecType == "" {
+			opt.CodecType = DefaultOption.CodecType
+		}
+		return opt, nil
+	}
 }
 
-func DialByCodec(network, address string, codecType codec.Type) (client *Client, err error) {
-	conn, err := net.Dial(network, address)
+type NewClientFunc func(conn net.Conn, opt *Option) (*Client, error)
+
+func Dial(network, address string, opts ...*Option) (client *Client, err error) {
+	return dialTimeout(NewClient, network, address, opts...)
+}
+
+type clientResult struct {
+	client *Client
+	err    error
+}
+
+func dialTimeout(f NewClientFunc, network, address string, opts ...*Option) (client *Client, err error) {
+	opt, err := parseOption(opts...)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialTimeout(network, address, time.Duration(opt.ConnectTimeout)*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		if client == nil {
-			err := conn.Close()
-			if err != nil {
-				logrus.Errorf("close conn error: %v", err)
-			}
+		if err != nil {
+			_ = conn.Close()
 		}
 	}()
-	return NewClient(conn, codecType)
+	// 开启一个新协程创建客户端
+	ch := make(chan clientResult)
+	go func() {
+		client, err := f(conn, opt)
+		ch <- clientResult{client, err}
+	}()
+
+	// 在主线程阻塞等待超时时间
+	// 如果超时时间内还没接收到 clientResult，则认为超时
+	select {
+	case result := <-ch:
+		return result.client, result.err
+	case <-time.After(opt.ConnectTimeout):
+		return nil, fmt.Errorf("rpc client: connect timeout expect within %v", opt.ConnectTimeout)
+	}
 }
 
 // 发送数据

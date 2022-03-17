@@ -80,6 +80,5 @@ func main() {
 			logrus.Infof("args: %v, reply: %v", args, reply)
 		}(i)
 	}
-	// time.Sleep(time.Second)
 	wg.Wait()
 }
