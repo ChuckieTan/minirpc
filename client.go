@@ -1,6 +1,7 @@
 package minirpc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,11 +27,11 @@ type Call struct {
 	// 返回的错误信息
 	Err error
 	// 方法调用结束时的信号
-	Done chan struct{}
+	Done chan *Call
 }
 
 func (call *Call) done() {
-	call.Done <- struct{}{}
+	call.Done <- call
 }
 
 // Client 表示一个 RPC 客户端
@@ -206,21 +207,29 @@ func dialTimeout(f NewClientFunc, network, address string, opts ...*Option) (cli
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.DialTimeout(network, address, time.Duration(opt.ConnectTimeout)*time.Second)
+	// 在 dial 的时候会阻塞，直到连接成功或超时
+	conn, err := net.DialTimeout(network, address, opt.ConnectTimeout)
 	if err != nil {
 		return nil, err
 	}
+
 	defer func() {
 		if err != nil {
 			_ = conn.Close()
 		}
 	}()
 	// 开启一个新协程创建客户端
-	ch := make(chan clientResult)
+	ch := make(chan clientResult, 1)
 	go func() {
 		client, err := f(conn, opt)
 		ch <- clientResult{client, err}
 	}()
+
+	// 如果超时时间为 0，则一直等待
+	if opt.ConnectTimeout == 0 {
+		result := <-ch
+		return result.client, result.err
+	}
 
 	// 在主线程阻塞等待超时时间
 	// 如果超时时间内还没接收到 clientResult，则认为超时
@@ -261,9 +270,9 @@ func (client *Client) send(call *Call) {
 }
 
 // 异步接口，直接返回 call 实例
-func (client *Client) Go(serviceMethod string, args, reply interface{}, done chan struct{}) *Call {
+func (client *Client) Go(serviceMethod string, args, reply interface{}, done chan *Call) *Call {
 	if done == nil {
-		done = make(chan struct{}, 1)
+		done = make(chan *Call, 1)
 	} else if len(done) == 0 {
 		logrus.Error("done channel is not buffered")
 		close(done)
@@ -280,9 +289,15 @@ func (client *Client) Go(serviceMethod string, args, reply interface{}, done cha
 	return call
 }
 
-// 同步接口，一直等待返回结果
-func (client *Client) Call(serviceMethod string, args, reply interface{}) error {
-	call := client.Go(serviceMethod, args, reply, nil)
-	<-call.Done
-	return call.Err
+// 同步接口，一直等待返回结果，在 context 超时时会返回错误
+func (client *Client) Call(ctx context.Context, serviceMethod string, args, reply interface{}) error {
+	call := client.Go(serviceMethod, args, reply, make(chan *Call, 1))
+	select {
+	case <-ctx.Done():
+		// 如果超时，则取消发送
+		client.removeCall(call.Seq)
+		return fmt.Errorf("rpc client: call timeout expect within %v", ctx.Err())
+	case call := <-call.Done:
+		return call.Err
+	}
 }
