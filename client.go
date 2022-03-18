@@ -248,7 +248,6 @@ func dialTimeout(f NewClientFunc, network, address string, opts ...*Option) (cli
 func (client *Client) send(call *Call) {
 	client.sending.Lock()
 	defer client.sending.Unlock()
-
 	seq, err := client.registerCall(call)
 	if err != nil {
 		call.Err = err
@@ -297,7 +296,8 @@ func (client *Client) Call(ctx context.Context, serviceMethod string, args, repl
 	case <-ctx.Done():
 		// 如果超时，则取消发送
 		client.removeCall(call.Seq)
-		return fmt.Errorf("rpc client: call timeout expect within %v", ctx.Err())
+		err := fmt.Errorf("rpc client: call timeout expect within %v", ctx.Err())
+		return err
 	case call := <-call.Done:
 		return call.Err
 	}

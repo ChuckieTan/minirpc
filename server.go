@@ -84,6 +84,7 @@ func (server *Server) Accept(linstener net.Listener) {
 			logrus.Errorf("minirpc.Server.Accept: %v", err)
 			return
 		}
+		// logrus.Info("connection from: ", conn.RemoteAddr())
 		go server.HandleConn(conn)
 	}
 }
@@ -140,6 +141,7 @@ func (server *Server) handleCodec(cc codec.Codec, opt *Option) {
 	wg := new(sync.WaitGroup)
 	for {
 		req, err := server.readRequest(cc)
+		// logrus.Info("minirpc.Server.handleCodec: readRequest")
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break

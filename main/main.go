@@ -4,12 +4,12 @@ import (
 	"context"
 	"minirpc"
 	"net"
-	"net/http"
 	"os"
 	"sync"
 	"time"
 
 	"minirpc/main/logfmt"
+	"minirpc/xclient"
 
 	"github.com/sirupsen/logrus"
 )
@@ -34,59 +34,81 @@ func (f Foo) Sum(args Args, reply *int) error {
 	return nil
 }
 
-func startServer(addr chan string) {
-	var foo Foo
-	if err := minirpc.Register(&foo); err != nil {
-		logrus.Fatalf("register error: %v", err)
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:9999")
-	if err != nil {
-		logrus.Fatalf("listen error: %v", err)
-	}
-	minirpc.HandleHTTP()
-	logrus.Infof("listen on %s", listener.Addr().String())
-	addr <- listener.Addr().String()
-	http.Serve(listener, nil)
+func (f Foo) Sleep(args Args, reply *int) error {
+	time.Sleep(time.Duration(args.Num1) * time.Second)
+	*reply = args.Num1 + args.Num2
+	return nil
 }
 
-func call(addr chan string) {
-	client, err := minirpc.XDial("http://" + <-addr)
-	if err != nil {
-		logrus.Fatalf("dial error: %v", err)
-	}
-	defer func() {
-		err = client.Close()
-		if err != nil {
-			logrus.Error("close client error: %v", err)
-		}
-	}()
+func startServer(addr chan string) {
+	var foo Foo
+	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	server := minirpc.NewServer()
+	server.Register(foo)
+	logrus.Infof("listen on %s", listener.Addr().String())
+	addr <- listener.Addr().String()
+	server.Accept(listener)
+	// http.Serve(listener, nil)
+}
 
-	var wg sync.WaitGroup
-	// 当服务器没准备好时客户端就发送消息，服务端接收到的消息会不完整
-	// 所以要等服务端准备好
-	time.Sleep(time.Second)
+// 在普通 call 或 broadcast 成功或失败后打印日志
+func foo(ctx context.Context, xc *xclient.XClient, typ, serviceMethod string, args *Args) {
+	var reply int
+	var err error
+	switch typ {
+	case "call":
+		err = xc.Call(ctx, serviceMethod, args, &reply)
+	case "broadcast":
+		err = xc.Broadcast(ctx, serviceMethod, args, &reply)
+	}
+	if err != nil {
+		logrus.Errorf("%s %s, error: %v", typ, serviceMethod, err)
+	} else {
+		logrus.Infof("%s %s, reply: %d", typ, serviceMethod, reply)
+	}
+}
+
+func call(addr1, addr2 string) {
+	d := xclient.NewMultiDiscovery([]string{"tcp://" + addr1, "tcp://" + addr2})
+	xc := xclient.NewXClient(d, xclient.SelectMode_Random, nil)
+	defer xc.Close()
+	wg := sync.WaitGroup{}
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			var reply int
-			args := Args{i, i * i}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			foo(context.Background(), xc, "call", "Foo.Sum", &Args{i, i * i})
+		}(i)
+	}
+	wg.Wait()
+}
+
+func broadcast(addr1, addr2 string) {
+	d := xclient.NewMultiDiscovery([]string{"tcp://" + addr1, "tcp://" + addr2})
+	xc := xclient.NewXClient(d, xclient.SelectMode_Random, nil)
+	defer xc.Close()
+	wg := sync.WaitGroup{}
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			foo(context.Background(), xc, "broadcast", "Foo.Sum", &Args{i, i * i})
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 			defer cancel()
-			err := client.Call(ctx, "Foo.Sum", args, &reply)
-			if err != nil {
-				logrus.Errorf("call error: %v", err)
-			}
-			logrus.Infof("args: %v, reply: %v", args, reply)
+			foo(ctx, xc, "broadcast", "Foo.Sleep", &Args{i, i * i})
 		}(i)
 	}
 	wg.Wait()
 }
 
 func main() {
-	// buf := bytes.NewBuffer([]byte{})
-	// a := codec.NewGobCodec(buf)
-	addr := make(chan string)
-	go call(addr)
-	startServer(addr)
+	ch1 := make(chan string)
+	ch2 := make(chan string)
+	go startServer(ch1)
+	go startServer(ch2)
+	addr1 := <-ch1
+	addr2 := <-ch2
+	time.Sleep(time.Second)
+	call(addr1, addr2)
+	broadcast(addr1, addr2)
 }

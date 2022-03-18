@@ -21,7 +21,8 @@ func NewGobCodec(conn io.ReadWriteCloser) Codec {
 		conn: conn,
 		buf:  buf,
 		dec:  gob.NewDecoder(conn),
-		enc:  gob.NewEncoder(buf),
+		// enc:  gob.NewEncoder(conn),
+		enc: gob.NewEncoder(buf),
 	}
 }
 
