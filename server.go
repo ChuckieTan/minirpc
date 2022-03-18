@@ -19,6 +19,7 @@ import (
 
 const MagicNumber = 0x065279
 
+// 服务器和客户端的头信息
 type Option struct {
 	MagicNumber int
 	CodecType   codec.Type
@@ -45,6 +46,7 @@ func NewServer() *Server {
 
 var DefaultServer = NewServer()
 
+// 注册一个结构体的所有方法
 func (server *Server) Register(rcvr interface{}) error {
 	svc := newService(rcvr)
 	if _, dup := server.serviceMap.LoadOrStore(svc.name, svc); dup {
@@ -74,6 +76,7 @@ func (server *Server) findService(serviceMethod string) (*service, *methodType, 
 	return svc, mtype, nil
 }
 
+// 接收一个连接并处理请求
 func (server *Server) Accept(linstener net.Listener) {
 	for {
 		conn, err := linstener.Accept()
@@ -163,6 +166,7 @@ func (server *Server) sendResponse(
 	}
 }
 
+// 读取 request 的 header 部分
 func (server *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {
 	var header codec.Header
 	if err := cc.ReadHeader(&header); err != nil {
@@ -174,6 +178,7 @@ func (server *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {
 	return &header, nil
 }
 
+// 读取一个 request，包括 header 和 body
 func (server *Server) readRequest(cc codec.Codec) (*request, error) {
 	header, err := server.readRequestHeader(cc)
 	if err != nil {
@@ -237,10 +242,12 @@ func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.
 	}
 }
 
+// 使用默认的服务器监听
 func Accept(linstener net.Listener) {
 	DefaultServer.Accept(linstener)
 }
 
+// 注册一个结构体的所有方法到默认的服务器
 func Register(rcvr interface{}) error {
 	return DefaultServer.Register(rcvr)
 }
@@ -278,6 +285,7 @@ func (server *Server) HandleHTTP() {
 	logrus.Info("minirpc.Server.HandleHTTP: debug server listen on:", defaultDebugPath)
 }
 
+// 使用默认的服务器处理 HTTP 请求
 func HandleHTTP() {
 	DefaultServer.HandleHTTP()
 }

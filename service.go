@@ -73,6 +73,7 @@ func newService(rcvr interface{}) *service {
 	return svc
 }
 
+// 注册此服务的结构体的所有方法
 func (svc *service) registerMethods() {
 	svc.method = make(map[string]*methodType)
 	for m := 0; m < svc.typ.NumMethod(); m++ {
@@ -118,6 +119,7 @@ func isExportedOrBuiltinType(t reflect.Type) bool {
 	return ast.IsExported(t.Name()) || t.PkgPath() == ""
 }
 
+// 调用指定的方法，并写入返回值到 reply 中
 func (s *service) call(m *methodType, args, reply reflect.Value) error {
 	atomic.AddUint64(&m.numCalls, 1)
 	f := m.method.Func

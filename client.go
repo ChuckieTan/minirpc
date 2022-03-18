@@ -70,12 +70,14 @@ func (client *Client) Close() error {
 	return client.cc.Close()
 }
 
+// 判断客户端是否可用
 func (client *Client) Avaliable() bool {
 	client.lock.Lock()
 	defer client.lock.Unlock()
 	return client.avaliable()
 }
 
+// 内部使用的 avvaliable 方法，无锁
 func (client *Client) avaliable() bool {
 	return !client.shutdown && !client.closed
 }
@@ -117,6 +119,7 @@ func (client *Client) terminateCalls(err error) {
 	}
 }
 
+// 循环接收服务端发送的数据，分为 header 和 body 两部分
 func (client *Client) recieve() {
 	var err error
 	// 只有在出错的时候才退出循环
@@ -189,15 +192,12 @@ func parseOption(opts ...*Option) (*Option, error) {
 
 type NewClientFunc func(conn net.Conn, opt *Option) (*Client, error)
 
+// 通过 TCP 方式连接服务端，具有超时功能
 func DialTCP(network, address string, opts ...*Option) (client *Client, err error) {
 	return dialTimeout(NewClient, network, address, opts...)
 }
 
-type clientResult struct {
-	client *Client
-	err    error
-}
-
+// 连接到指定地址的服务器，超时返回错误
 func dialTimeout(f NewClientFunc, network, address string, opts ...*Option) (client *Client, err error) {
 	opt, err := parseOption(opts...)
 	if err != nil {
@@ -214,6 +214,13 @@ func dialTimeout(f NewClientFunc, network, address string, opts ...*Option) (cli
 			_ = conn.Close()
 		}
 	}()
+
+	// 异步创建客户端需要传出客户端和 error
+	// 所以需要新建一个结构体来放入 chan 里面
+	type clientResult struct {
+		client *Client
+		err    error
+	}
 	// 开启一个新协程创建客户端
 	ch := make(chan clientResult, 1)
 	go func() {
@@ -265,6 +272,7 @@ func (client *Client) send(call *Call) {
 	}
 }
 
+// 对服务器发起调用
 // 异步接口，直接返回 call 实例
 func (client *Client) Go(serviceMethod string, args, reply interface{}, done chan *Call) *Call {
 	if done == nil {
@@ -281,7 +289,8 @@ func (client *Client) Go(serviceMethod string, args, reply interface{}, done cha
 	return call
 }
 
-// 同步接口，一直等待返回结果，在 context 超时时会返回错误
+// 对服务器发起调用，并等待返回
+// 在 context 超时时会返回错误
 func (client *Client) Call(ctx context.Context, serviceMethod string, args, reply interface{}) error {
 	call := client.Go(serviceMethod, args, reply, make(chan *Call, 1))
 	select {
@@ -294,6 +303,7 @@ func (client *Client) Call(ctx context.Context, serviceMethod string, args, repl
 	}
 }
 
+// 带有超时功能的调用
 func (client *Client) CallTimeout(serviceMethod string, args, reply interface{}, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
