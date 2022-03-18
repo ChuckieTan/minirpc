@@ -1,6 +1,7 @@
 package minirpc
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,8 @@ import (
 	"io"
 	"minirpc/codec"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -186,7 +189,7 @@ func parseOption(opts ...*Option) (*Option, error) {
 
 type NewClientFunc func(conn net.Conn, opt *Option) (*Client, error)
 
-func Dial(network, address string, opts ...*Option) (client *Client, err error) {
+func DialTCP(network, address string, opts ...*Option) (client *Client, err error) {
 	return dialTimeout(NewClient, network, address, opts...)
 }
 
@@ -295,4 +298,55 @@ func (client *Client) CallTimeout(serviceMethod string, args, reply interface{},
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return client.Call(ctx, serviceMethod, args, reply)
+}
+
+// 新建一个支持 HTTP 协议的客户端
+func NewHTTPClient(conn net.Conn, opt *Option) (*Client, error) {
+	_, _ = io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", defaultRPCPath))
+
+	// 使用 connect 方式连接到服务器，之后切换到 RPC 模式
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: "CONNECT"})
+	if err == nil && resp.Status == connected {
+		return NewClient(conn, opt)
+	}
+	// 客户端返回的状态不对
+	if err == nil {
+		err = errors.New("unexpected connect status: " + resp.Status)
+	}
+	return nil, err
+}
+
+// 通过 HTTP 协议连接到服务器
+func DialHTTP(network, address string, opts ...*Option) (*Client, error) {
+	return dialTimeout(NewHTTPClient, "tcp", address, opts...)
+}
+
+// XDial 方法用于自定义连接方式
+// rpcAddress 的格式类似于 tcp://127.0.0.1:7001, http://127.0.0.1:7001 等
+func XDial(rpcAddress string, opts ...*Option) (*Client, error) {
+	// 分割字符串，得到网络类型和地址
+	network, address, err := splitRPCAddress(rpcAddress)
+	if err != nil {
+		return nil, err
+	}
+
+	switch network {
+	case "tcp", "tcp4", "tcp6":
+		return DialTCP(network, address, opts...)
+	case "unix":
+		return DialTCP(network, address, opts...)
+	case "http", "https":
+		return DialHTTP("tcp", address, opts...)
+	default:
+		return nil, fmt.Errorf("rpc client: unknown network %q", network)
+	}
+}
+
+// 分割 RPC 地址，得到网络类型和地址
+func splitRPCAddress(rpcAddress string) (string, string, error) {
+	strs := strings.Split(rpcAddress, "://")
+	if len(strs) != 2 {
+		return "", "", fmt.Errorf("invalid rpc address: %s", rpcAddress)
+	}
+	return strs[0], strs[1], nil
 }

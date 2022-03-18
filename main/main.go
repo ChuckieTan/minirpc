@@ -4,6 +4,7 @@ import (
 	"context"
 	"minirpc"
 	"net"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -12,6 +13,15 @@ import (
 
 	"github.com/sirupsen/logrus"
 )
+
+func init() {
+	//设置output,默认为stderr,可以为任何io.Writer，比如文件*os.File
+	logrus.SetOutput(os.Stdout)
+	//设置最低loglevel
+	logrus.SetLevel(logrus.InfoLevel)
+	logrus.SetReportCaller(true)
+	logrus.SetFormatter(&logfmt.MyFormatter{})
+}
 
 type Foo struct{}
 
@@ -29,31 +39,18 @@ func startServer(addr chan string) {
 	if err := minirpc.Register(&foo); err != nil {
 		logrus.Fatalf("register error: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:9999")
 	if err != nil {
 		logrus.Fatalf("listen error: %v", err)
 	}
+	minirpc.HandleHTTP()
 	logrus.Infof("listen on %s", listener.Addr().String())
 	addr <- listener.Addr().String()
-	minirpc.Accept(listener)
+	http.Serve(listener, nil)
 }
 
-func init() {
-	//设置output,默认为stderr,可以为任何io.Writer，比如文件*os.File
-	logrus.SetOutput(os.Stdout)
-	//设置最低loglevel
-	logrus.SetLevel(logrus.InfoLevel)
-	logrus.SetReportCaller(true)
-	logrus.SetFormatter(&logfmt.MyFormatter{})
-	// gob.Register(Args{})
-}
-
-func main() {
-	// buf := bytes.NewBuffer([]byte{})
-	// a := codec.NewGobCodec(buf)
-	addr := make(chan string)
-	go startServer(addr)
-	client, err := minirpc.Dial("tcp", <-addr)
+func call(addr chan string) {
+	client, err := minirpc.XDial("http://" + <-addr)
 	if err != nil {
 		logrus.Fatalf("dial error: %v", err)
 	}
@@ -68,7 +65,7 @@ func main() {
 	// 当服务器没准备好时客户端就发送消息，服务端接收到的消息会不完整
 	// 所以要等服务端准备好
 	time.Sleep(time.Second)
-	for i := 1; i < 5; i++ {
+	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -84,4 +81,12 @@ func main() {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func main() {
+	// buf := bytes.NewBuffer([]byte{})
+	// a := codec.NewGobCodec(buf)
+	addr := make(chan string)
+	go call(addr)
+	startServer(addr)
 }

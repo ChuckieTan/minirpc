@@ -8,6 +8,7 @@ import (
 	"log"
 	"minirpc/codec"
 	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -31,7 +32,7 @@ var DefaultCodecType = codec.GobType
 var DefaultOption = &Option{
 	MagicNumber:    MagicNumber,
 	CodecType:      codec.GobType,
-	ConnectTimeout: time.Second * 10,
+	ConnectTimeout: time.Second * 3,
 }
 
 type Server struct {
@@ -200,6 +201,7 @@ func (server *Server) readRequest(cc codec.Codec) (*request, error) {
 	return req, nil
 }
 
+// 处理请求，并发送回应
 func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
 	defer wg.Done()
 	called := make(chan struct{})
@@ -241,4 +243,41 @@ func Accept(linstener net.Listener) {
 
 func Register(rcvr interface{}) error {
 	return DefaultServer.Register(rcvr)
+}
+
+const (
+	connected        = "200 Connected to minirpc"
+	defaultRPCPath   = "/_minirpc_"
+	defaultDebugPath = "/_minirpc_debug_"
+)
+
+// 实现了 http.Handler 接口，以进行 http 之上的 RPC 通信
+// 使用 HTTP 中的 Connect 方法进行连接
+func (server *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "CONNECT" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		io.WriteString(w, "405 must CONNECT\n")
+		return
+	}
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		logrus.Error("minirpc.ServeHTTP: hijack error: ", err)
+		return
+	}
+	_, _ = io.WriteString(conn, "HTTP/1.0 "+connected+"\n\n")
+	server.HandleConn(conn)
+}
+
+// 注册相应的地址为 http path
+func (server *Server) HandleHTTP() {
+	http.Handle(defaultRPCPath, server)
+	http.Handle(defaultDebugPath, DebugHTTP{server})
+	logrus.Info("minirpc.Server.HandleHTTP: http server started")
+	logrus.Info("minirpc.Server.HandleHTTP: http server listen on:", defaultRPCPath)
+	logrus.Info("minirpc.Server.HandleHTTP: debug server listen on:", defaultDebugPath)
+}
+
+func HandleHTTP() {
+	DefaultServer.HandleHTTP()
 }
