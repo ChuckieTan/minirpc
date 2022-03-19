@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"minirpc"
 	"net"
+	"net/http"
 	"os"
 	"sync"
 	"time"
 
 	"minirpc/main/logfmt"
+	"minirpc/registry"
 	"minirpc/xclient"
 
 	"github.com/sirupsen/logrus"
@@ -40,13 +43,21 @@ func (f Foo) Sleep(args Args, reply *int) error {
 	return nil
 }
 
-func startServer(addr chan string) {
+func startRegistry(addr chan string) {
+	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	registry.HandleHTTP()
+	addr <- listener.Addr().String()
+	_ = http.Serve(listener, nil)
+}
+
+func startServer(registryAddr string, wg *sync.WaitGroup) {
 	var foo Foo
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	server := minirpc.NewServer()
 	server.Register(foo)
-	logrus.Infof("listen on %s", listener.Addr().String())
-	addr <- listener.Addr().String()
+	logrus.Infof("server listen on %s", listener.Addr().String())
+	registry.Heartbeat(registryAddr, "tcp://"+listener.Addr().String(), 0)
+	wg.Done()
 	server.Accept(listener)
 	// http.Serve(listener, nil)
 }
@@ -68,8 +79,8 @@ func foo(ctx context.Context, xc *xclient.XClient, typ, serviceMethod string, ar
 	}
 }
 
-func call(addr1, addr2 string) {
-	d := xclient.NewMultiDiscovery([]string{"tcp://" + addr1, "tcp://" + addr2})
+func call(registry string) {
+	d := xclient.NewMiniRegistryDiscovery(registry, 0)
 	xc := xclient.NewXClient(d, xclient.SelectMode_Random, nil)
 	defer xc.Close()
 	wg := sync.WaitGroup{}
@@ -83,8 +94,8 @@ func call(addr1, addr2 string) {
 	wg.Wait()
 }
 
-func broadcast(addr1, addr2 string) {
-	d := xclient.NewMultiDiscovery([]string{"tcp://" + addr1, "tcp://" + addr2})
+func broadcast(registry string) {
+	d := xclient.NewMiniRegistryDiscovery(registry, 0)
 	xc := xclient.NewXClient(d, xclient.SelectMode_Random, nil)
 	defer xc.Close()
 	wg := sync.WaitGroup{}
@@ -102,13 +113,20 @@ func broadcast(addr1, addr2 string) {
 }
 
 func main() {
-	ch1 := make(chan string)
-	ch2 := make(chan string)
-	go startServer(ch1)
-	go startServer(ch2)
-	addr1 := <-ch1
-	addr2 := <-ch2
+	registryAddrCh := make(chan string)
+	go startRegistry(registryAddrCh)
+	registryAddr := <-registryAddrCh
+	registryAddr = fmt.Sprintf("http://%s%s", registryAddr, registry.DefaultPath)
+
 	time.Sleep(time.Second)
-	call(addr1, addr2)
-	broadcast(addr1, addr2)
+	wg := new(sync.WaitGroup)
+	wg.Add(3)
+	go startServer(registryAddr, wg)
+	go startServer(registryAddr, wg)
+	go startServer(registryAddr, wg)
+	wg.Wait()
+
+	time.Sleep(time.Second)
+	call(registryAddr)
+	broadcast(registryAddr)
 }

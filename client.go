@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // Call 表示一个 RPC 调用
@@ -158,6 +160,11 @@ func NewClient(conn net.Conn, opt *Option) (*Client, error) {
 	cc := newCodecFunc(conn)
 	// 发送 option
 	if err := json.NewEncoder(conn).Encode(opt); err != nil {
+		return nil, err
+	}
+	// 两次握手，解决 TCP 粘包问题
+	if err := json.NewDecoder(conn).Decode(&opt); err != nil {
+		logrus.Error(err)
 		return nil, err
 	}
 

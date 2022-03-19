@@ -5,6 +5,8 @@ import (
 	"minirpc"
 	"reflect"
 	"sync"
+
+	"github.com/sirupsen/logrus"
 )
 
 type XClient struct {
@@ -44,6 +46,7 @@ func (c *XClient) dial(rpcAddr string) (*minirpc.Client, error) {
 	// 如果客户端已不再可用，则关闭并删除
 	if ok && !client.Avaliable() {
 		client.Close()
+		logrus.Warn("client is not avaliable, close it")
 		delete(c.clients, rpcAddr)
 		client = nil
 	}
@@ -91,11 +94,14 @@ func (c *XClient) Broadcast(ctx context.Context, serviceMethod string, args, rep
 	// 判断是否已经赋值的信号
 	replyDone := reply == nil
 	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	for _, rpcAddr := range servers {
 		wg.Add(1)
 		go func(rpcAddr string) {
 			defer wg.Done()
+			// 先复制一份 reply，避免多线程写出错
 			replyClone := reflect.New(reflect.ValueOf(reply).Elem().Type()).Interface()
+			// call 的返回值 err 只有第一次出错复制到要返回的返回值中
 			e := c.call(ctx, rpcAddr, serviceMethod, args, replyClone)
 			assignLock.Lock()
 			if err == nil && e != nil {

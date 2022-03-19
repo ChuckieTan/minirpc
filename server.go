@@ -92,20 +92,25 @@ func (server *Server) Accept(linstener net.Listener) {
 // HandleConn 处理单个连接，并阻塞程序运行直到连接关闭
 func (server *Server) HandleConn(conn io.ReadWriteCloser) {
 	defer conn.Close()
-	// 首先读取报文的头部
+	// 读取报文的头部
 	option, err := server.readOption(conn)
 	if err != nil {
 		logrus.Error(err)
 		return
 	}
 
-	// 然后获取对应的编码器
+	// 获取对应的编码器
 	codecFunc, ok := codec.NewCodecFuncMap[option.CodecType]
 	if !ok {
 		logrus.Errorf("minirpc.Server.HandleConn: codec type error")
 		return
 	}
 	codec := codecFunc(conn)
+	// 两次握手，解决 TCP 粘包问题
+	if err := json.NewEncoder(conn).Encode(option); err != nil {
+		logrus.Error("minirpc.Server.HandleConn: option error: ", err)
+		return
+	}
 	server.handleCodec(codec, option)
 }
 
@@ -141,12 +146,10 @@ func (server *Server) handleCodec(cc codec.Codec, opt *Option) {
 	wg := new(sync.WaitGroup)
 	for {
 		req, err := server.readRequest(cc)
-		// logrus.Info("minirpc.Server.handleCodec: readRequest")
 		if err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
 			}
-			logrus.Info("minirpc.Server.handleCodec: read request error:", err)
 			req.header.Error = err.Error()
 			go server.sendResponse(cc, req.header, req, sending)
 			continue

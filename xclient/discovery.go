@@ -74,7 +74,8 @@ func (d *MultiDiscovery) getRandom() string {
 	if len(d.serverList) == 0 {
 		return ""
 	}
-	return d.serverList[d.r.Intn(len(d.serverList))]
+	addr := d.serverList[d.r.Intn(len(d.serverList))]
+	return addr
 }
 
 func (d *MultiDiscovery) getRoundRobin() string {

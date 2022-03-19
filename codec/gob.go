@@ -10,19 +10,20 @@ import (
 
 type GobCodec struct {
 	conn io.ReadWriteCloser
-	buf  *bufio.Writer
+	buf  *bufio.ReadWriter
 	dec  *gob.Decoder
 	enc  *gob.Encoder
 }
 
 func NewGobCodec(conn io.ReadWriteCloser) Codec {
-	buf := bufio.NewWriter(conn)
+	writeBuf := bufio.NewWriter(conn)
+	readBuf := bufio.NewReader(conn)
+	buf := bufio.NewReadWriter(readBuf, writeBuf)
 	return &GobCodec{
 		conn: conn,
 		buf:  buf,
-		dec:  gob.NewDecoder(conn),
-		// enc:  gob.NewEncoder(conn),
-		enc: gob.NewEncoder(buf),
+		dec:  gob.NewDecoder(buf),
+		enc:  gob.NewEncoder(buf),
 	}
 }
 
