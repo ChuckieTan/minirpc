@@ -2,6 +2,8 @@ package codec
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/binary"
 	"encoding/gob"
 	"io"
 
@@ -28,11 +30,24 @@ func NewGobCodec(conn io.ReadWriteCloser) Codec {
 }
 
 func (c *GobCodec) ReadHeader(h *Header) error {
-	return c.dec.Decode(h)
+	var length uint32
+	binary.Read(c.buf, binary.BigEndian, &length)
+	raw := make([]byte, 0, length)
+	c.buf.Read(raw)
+	buf := bytes.NewBuffer(raw)
+	// return c.dec.Decode(h)
+	return gob.NewDecoder(buf).Decode(h)
 }
 
 func (c *GobCodec) ReadBody(body interface{}) error {
-	return c.dec.Decode(body)
+	var length uint32
+	binary.Read(c.buf, binary.BigEndian, &length)
+	raw := make([]byte, 0, length)
+	c.buf.Read(raw)
+	buf := bytes.NewBuffer(raw)
+	// return c.dec.Decode(h)
+	return gob.NewDecoder(buf).Decode(body)
+	// return c.dec.Decode(body)
 }
 
 func (c *GobCodec) Write(h *Header, body interface{}) (err error) {
@@ -42,14 +57,30 @@ func (c *GobCodec) Write(h *Header, body interface{}) (err error) {
 			_ = c.Close()
 		}
 	}()
-	if err := c.enc.Encode(h); err != nil {
+	buf := new(bytes.Buffer)
+	if err := gob.NewEncoder(buf).Encode(h); err != nil {
 		logrus.Error("rpc codec: gob error encoding header:", err)
 		return err
 	}
-	if err := c.enc.Encode(body); err != nil {
-		logrus.Error("rpc codec: gob error encoding body:", err)
+	binary.Write(c.buf, binary.BigEndian, uint32(buf.Len()))
+	c.buf.Write(buf.Bytes())
+
+	buf.Reset()
+	if err := gob.NewEncoder(buf).Encode(body); err != nil {
+		logrus.Error("rpc codec: gob error encoding header:", err)
 		return err
 	}
+	binary.Write(c.buf, binary.BigEndian, uint32(buf.Len()))
+	c.buf.Write(buf.Bytes())
+
+	// if err := c.enc.Encode(h); err != nil {
+	// 	logrus.Error("rpc codec: gob error encoding header:", err)
+	// 	return err
+	// }
+	// if err := c.enc.Encode(body); err != nil {
+	// 	logrus.Error("rpc codec: gob error encoding body:", err)
+	// 	return err
+	// }
 	return nil
 }
 

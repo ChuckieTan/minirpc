@@ -106,11 +106,11 @@ func (server *Server) HandleConn(conn io.ReadWriteCloser) {
 		return
 	}
 	codec := codecFunc(conn)
-	// 两次握手，解决 TCP 粘包问题
-	if err := json.NewEncoder(conn).Encode(option); err != nil {
-		logrus.Error("minirpc.Server.HandleConn: option error: ", err)
-		return
-	}
+	// // 两次握手，解决 TCP 粘包问题
+	// if err := json.NewEncoder(conn).Encode(option); err != nil {
+	// 	logrus.Error("minirpc.Server.HandleConn: option error: ", err)
+	// 	return
+	// }
 	server.handleCodec(codec, option)
 }
 
