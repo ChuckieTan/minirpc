@@ -32,17 +32,16 @@ func NewGobCodec(conn io.ReadWriteCloser) Codec {
 func (c *GobCodec) ReadHeader(h *Header) error {
 	var length uint32
 	binary.Read(c.buf, binary.BigEndian, &length)
-	raw := make([]byte, 0, length)
+	raw := make([]byte, length)
 	c.buf.Read(raw)
 	buf := bytes.NewBuffer(raw)
-	// return c.dec.Decode(h)
 	return gob.NewDecoder(buf).Decode(h)
 }
 
 func (c *GobCodec) ReadBody(body interface{}) error {
 	var length uint32
 	binary.Read(c.buf, binary.BigEndian, &length)
-	raw := make([]byte, 0, length)
+	raw := make([]byte, length)
 	c.buf.Read(raw)
 	buf := bytes.NewBuffer(raw)
 	// return c.dec.Decode(h)
