@@ -3,6 +3,7 @@ package xclient
 import (
 	"errors"
 	"math/rand"
+	"minirpc/xclient/consistenthash"
 	"sync"
 )
 
@@ -11,6 +12,7 @@ type SelectMode uint8
 const (
 	SelectMode_Random SelectMode = iota
 	SelectMode_RoundRobin
+	SelectMode_ConsistentHash
 )
 
 type Discovery interface {
@@ -33,12 +35,15 @@ type MultiDiscovery struct {
 	mu sync.RWMutex
 	// 记录轮询算法当前选择的服务
 	index int
+
+	consistentHash *consistenthash.ConsistentHash
 }
 
 func NewMultiDiscovery(serverList []string) *MultiDiscovery {
 	return &MultiDiscovery{
-		serverList: serverList,
-		r:          rand.New(rand.NewSource(0)),
+		serverList:     serverList,
+		r:              rand.New(rand.NewSource(0)),
+		consistentHash: consistenthash.New(5),
 	}
 }
 
@@ -86,6 +91,13 @@ func (d *MultiDiscovery) getRoundRobin() string {
 	d.index = (d.index + 1) % len(d.serverList)
 	return d.serverList[index]
 }
+
+// func (d *MultiDiscovery) getConsistentHash() string {
+// 	if len(d.serverList) == 0 {
+// 		return ""
+// 	}
+// 	return d.consistentHash.Get(d.serverList)
+// }
 
 func (d *MultiDiscovery) GetAll() ([]string, error) {
 	d.mu.RLock()
